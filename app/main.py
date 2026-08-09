@@ -1,13 +1,24 @@
 """
-Stage 1 stub: just enough to prove the data layer boots correctly.
-Real endpoints (POST /jobs, node registration, etc.) land in Stage 2 -
-this file gets replaced, not appended to, when we get there.
+Stage 2: Control Plane CRUD.
+
+No scheduling logic yet on purpose - jobs are created and just sit at
+PENDING. That's deliberate: Stage 3 adds a SchedulingPolicy that decides
+*which* node a job goes to, and it's much easier to build/test that
+against a working "jobs exist, nodes exist" API than to build placement
+logic and persistence at the same time.
 """
-from fastapi import FastAPI
+from datetime import datetime
 
-from app.database import init_db
+from fastapi import FastAPI, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 
-app = FastAPI(title="DocFlow", version="0.1.0")
+from app.database import init_db, get_db
+from app.models import (
+    Job, Node, JobStatus, NodeStatus,
+    JobCreate, JobOut, NodeRegister, NodeOut,
+)
+
+app = FastAPI(title="DocFlow", version="0.2.0")
 
 
 @app.on_event("startup")
@@ -17,4 +28,74 @@ def on_startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "stage": 1}
+    return {"status": "ok", "stage": 2}
+
+
+# ------------------------------------------------------------------- Jobs
+
+@app.post("/jobs", response_model=JobOut, status_code=201)
+def create_job(payload: JobCreate, db: Session = Depends(get_db)):
+    """
+    Create a job. Status defaults to PENDING - no node assignment happens
+    here. Stage 3's scheduler is what moves PENDING -> SCHEDULED.
+    """
+    job = Job(url=payload.url, status=JobStatus.PENDING.value)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.get("/jobs", response_model=list[JobOut])
+def list_jobs(
+    status: JobStatus | None = Query(default=None, description="Filter by job status"),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Job)
+    if status is not None:
+        query = query.filter(Job.status == status.value)
+    return query.order_by(Job.created_at.desc()).all()
+
+
+@app.get("/jobs/{job_id}", response_model=JobOut)
+def get_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return job
+
+
+# ------------------------------------------------------------------ Nodes
+
+@app.post("/nodes", response_model=NodeOut, status_code=201)
+def register_node(payload: NodeRegister, db: Session = Depends(get_db)):
+    """
+    Register (or re-register) a worker node. Idempotent by design: a
+    worker calls this on startup every time, including after a restart,
+    so re-registering an existing node.id just resets it to ACTIVE with
+    a fresh heartbeat rather than erroring.
+    """
+    node = db.query(Node).filter(Node.id == payload.id).first()
+    if node is None:
+        node = Node(id=payload.id, capacity=payload.capacity)
+        db.add(node)
+    else:
+        node.capacity = payload.capacity
+        node.status = NodeStatus.ACTIVE.value
+        node.last_heartbeat = datetime.utcnow()
+    db.commit()
+    db.refresh(node)
+    return node
+
+
+@app.get("/nodes", response_model=list[NodeOut])
+def list_nodes(db: Session = Depends(get_db)):
+    return db.query(Node).order_by(Node.registered_at).all()
+
+
+@app.get("/nodes/{node_id}", response_model=NodeOut)
+def get_node(node_id: str, db: Session = Depends(get_db)):
+    node = db.query(Node).filter(Node.id == node_id).first()
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    return node
