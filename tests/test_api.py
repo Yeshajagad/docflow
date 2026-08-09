@@ -86,3 +86,27 @@ def test_register_node_is_idempotent():
 def test_get_nonexistent_node_404():
     resp = client.get("/nodes/ghost-node")
     assert resp.status_code == 404
+
+def test_job_gets_scheduled_onto_registered_node():
+    client.post("/nodes", json={"id": "node-1", "capacity": 100})
+    resp = client.post("/jobs", json={"url": "https://www.sec.gov/example"})
+    job = resp.json()
+    assert job["status"] == "SCHEDULED"
+    assert job["assigned_node_id"] == "node-1"
+
+    node = client.get("/nodes/node-1").json()
+    assert node["current_load"] == job["weight"]
+
+
+def test_job_stays_pending_when_no_node_registered():
+    resp = client.post("/jobs", json={"url": "https://www.sec.gov/example"})
+    job = resp.json()
+    assert job["status"] == "PENDING"
+    assert job["assigned_node_id"] is None
+
+
+def test_job_stays_pending_when_cluster_is_full():
+    client.post("/nodes", json={"id": "node-1", "capacity": 5})  # smaller than default weight (10)
+    resp = client.post("/jobs", json={"url": "https://www.sec.gov/example"})
+    job = resp.json()
+    assert job["status"] == "PENDING"

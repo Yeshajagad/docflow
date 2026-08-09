@@ -1,11 +1,8 @@
 """
-Stage 2: Control Plane CRUD.
+Stage 3: wires the scheduler into job creation.
 
-No scheduling logic yet on purpose - jobs are created and just sit at
-PENDING. That's deliberate: Stage 3 adds a SchedulingPolicy that decides
-*which* node a job goes to, and it's much easier to build/test that
-against a working "jobs exist, nodes exist" API than to build placement
-logic and persistence at the same time.
+No weight estimation yet (that's Stage 6) - jobs use a placeholder
+weight of 10.0 until the real HEAD-request-based estimator replaces it.
 """
 from datetime import datetime
 
@@ -13,12 +10,13 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import init_db, get_db
+from app.scheduler import schedule_job
 from app.models import (
     Job, Node, JobStatus, NodeStatus,
     JobCreate, JobOut, NodeRegister, NodeOut,
 )
 
-app = FastAPI(title="DocFlow", version="0.2.0")
+app = FastAPI(title="DocFlow", version="0.3.0")
 
 
 @app.on_event("startup")
@@ -28,7 +26,7 @@ def on_startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "stage": 2}
+    return {"status": "ok", "stage": 3}
 
 
 # ------------------------------------------------------------------- Jobs
@@ -36,11 +34,16 @@ def health():
 @app.post("/jobs", response_model=JobOut, status_code=201)
 def create_job(payload: JobCreate, db: Session = Depends(get_db)):
     """
-    Create a job. Status defaults to PENDING - no node assignment happens
-    here. Stage 3's scheduler is what moves PENDING -> SCHEDULED.
+    Create a job and immediately attempt to place it on a node via the
+    configured scheduling policy. If the cluster is full, the job simply
+    stays PENDING - Stage 5's reconciler will retry placing it later.
     """
     job = Job(url=payload.url, status=JobStatus.PENDING.value)
     db.add(job)
+    db.flush()  # assigns job.id without committing yet
+
+    schedule_job(db, job)
+
     db.commit()
     db.refresh(job)
     return job
