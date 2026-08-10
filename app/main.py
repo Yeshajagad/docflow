@@ -5,6 +5,8 @@ No weight estimation yet (that's Stage 6) - jobs use a placeholder
 weight of 10.0 until the real HEAD-request-based estimator replaces it.
 """
 from datetime import datetime
+from app.heartbeat import tracker
+from app.reconcile import reconcile
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -16,7 +18,7 @@ from app.models import (
     JobCreate, JobOut, NodeRegister, NodeOut,
 )
 
-app = FastAPI(title="DocFlow", version="0.3.0")
+app = FastAPI(title="DocFlow", version="0.4.0")
 
 
 @app.on_event("startup")
@@ -86,6 +88,9 @@ def register_node(payload: NodeRegister, db: Session = Depends(get_db)):
         node.capacity = payload.capacity
         node.status = NodeStatus.ACTIVE.value
         node.last_heartbeat = datetime.utcnow()
+
+    tracker.beat(payload.id) 
+    
     db.commit()
     db.refresh(node)
     return node
@@ -102,3 +107,33 @@ def get_node(node_id: str, db: Session = Depends(get_db)):
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
     return node
+
+@app.post("/nodes/{node_id}/heartbeat", response_model=NodeOut)
+def send_heartbeat(node_id: str, db: Session = Depends(get_db)):
+    """
+    Called periodically by each worker (Stage 7) to prove it's alive.
+    Resets the Redis/in-memory TTL and, if this node had previously been
+    marked DEAD by the reconciler, revives it back to ACTIVE - a worker
+    that comes back after a network blip should rejoin the cluster
+    automatically, not require manual re-registration.
+    """
+    node = db.query(Node).filter(Node.id == node_id).first()
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    tracker.beat(node_id)
+    node.last_heartbeat = datetime.utcnow()
+    if node.status == NodeStatus.DEAD.value:
+        node.status = NodeStatus.ACTIVE.value
+    db.commit()
+    db.refresh(node)
+    return node
+
+
+@app.post("/reconcile")
+def run_reconcile(db: Session = Depends(get_db)):
+    """
+    Sweeps for nodes whose heartbeat has expired and flags their stuck
+    jobs. Meant to be called periodically by scripts/reconciler.py.
+    """
+    return reconcile(db)
