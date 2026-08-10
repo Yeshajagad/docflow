@@ -18,7 +18,7 @@ from app.models import (
     JobCreate, JobOut, NodeRegister, NodeOut,
 )
 
-app = FastAPI(title="DocFlow", version="0.4.0")
+app = FastAPI(title="DocFlow", version="0.5.0")
 
 
 @app.on_event("startup")
@@ -28,7 +28,7 @@ def on_startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "stage": 3}
+    return {"status": "ok", "stage": 5}
 
 
 # ------------------------------------------------------------------- Jobs
@@ -90,7 +90,7 @@ def register_node(payload: NodeRegister, db: Session = Depends(get_db)):
         node.last_heartbeat = datetime.utcnow()
 
     tracker.beat(payload.id) 
-    
+
     db.commit()
     db.refresh(node)
     return node

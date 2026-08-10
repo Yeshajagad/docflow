@@ -62,6 +62,7 @@ class Job(Base):
     assigned_node_id: Mapped[str] = Column(String, nullable=True)
 
     retries: Mapped[int] = Column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime] = Column(DateTime, nullable=True)
     result: Mapped[dict] = Column(JSON, nullable=True)
     error: Mapped[str] = Column(String, nullable=True)
 
@@ -102,6 +103,7 @@ class JobOut(BaseModel):
     weight: float | None = None
     assigned_node_id: str | None = None
     retries: int
+    next_retry_at: datetime | None = None
     result: dict | None = None
     error: str | None = None
     created_at: datetime
